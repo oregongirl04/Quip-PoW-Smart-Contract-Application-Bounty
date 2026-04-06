@@ -1,2 +1,5 @@
 # Quip-PoW-Smart-Contract-Application-Bounty
 Below is a deployable design for a Quip-powered logistics contract that turns PoW outputs into actionable delivery commitments for government benefits distribution. The core idea is that each PoW solution becomes a verifiable routing and scheduling artifact, so the work directly reduces missed delivery windows instead of being discarded as waste.
+
+Design rationale
+Quip’s documentation describes its compute layer as a useful-work PoW system where miners solve real optimization jobs, and its lifecycle supports propose, approve, claim, cancellation, and slashing semantics for programmable value transfers. That makes it a good fit for logistics, where the hard problem is not just “compute a hash,” but “find the best delivery plan under deadlines, capacity, geography, and service constraints” . For food-stamp and welfare distributions, the practical value is a schedule that increases on-time delivery, reduces courier deadhead, and creates penalties when providers miss service-level targets
