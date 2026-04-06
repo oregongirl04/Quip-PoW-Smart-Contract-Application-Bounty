@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IQuipPoWVerifier {
+    function verifySolution(
+        bytes32 jobId,
+        bytes32 instanceHash,
+        bytes32 solutionHash,
+        bytes calldata proof
+    ) external view returns (bool);
+}
+
+contract WelfareDeliveryRouter {
+    enum JobStatus { None, Open, Assigned, Completed, Cancelled }
+
+    struct DeliveryJob {
+        address sponsor;
+        address courier;
+        bytes32 instanceHash;
+        uint256 reward;
+        uint256 deadline;
+        uint256 maxLatencyMinutes;
+        JobStatus status;
+        bytes32 acceptedSolutionHash;
+        bytes32 routeCommitment;
+    }
+
+    struct PoWSubmission {
+        bytes32 solutionHash;
+        bytes32 routeCommitment;
+        uint256 etaMinutes;
+        uint256 score; // lower is better: lateness risk, distance, cost
+    }
+
+    IQuipPoWVerifier public immutable verifier;
+    uint256 public nextJobId;
+
+    mapping(uint256 => DeliveryJob) public jobs;
+    mapping(uint256 => mapping(bytes32 => bool)) public acceptedSolutions;
+
+    event JobCreated(
+        uint256 indexed jobId,
+        address indexed sponsor,
+        bytes32 instanceHash,
+        uint256 reward,
+        uint256 deadline,
+        uint256 maxLatencyMinutes
+    );
+
+    event JobAssigned(uint256 indexed jobId, address indexed courier, bytes32 solutionHash);
+    event JobCompleted(uint256 indexed jobId, bytes32 solutionHash);
+    event JobCancelled(uint256 indexed jobId);
+    event Slashed(uint256 indexed jobId, address indexed courier, uint256 amount);
+
+    constructor(address quipVerifier) {
+        verifier = IQuipPoWVerifier(quipVerifier);
+    }
+
+    function createJob(
+        bytes32 instanceHash,
+        uint256 deadline,
+        uint256 maxLatencyMinutes
+    ) external payable returns (uint256 jobId) {
+        require(msg.value > 0, "reward required");
+        require(deadline > block.timestamp, "invalid deadline");
+
+        jobId = nextJobId++;
+        jobs[jobId] = DeliveryJob({
+            sponsor: msg.sender,
+            courier: address(0),
+            instanceHash: instanceHash,
+            reward: msg.value,
+            deadline: deadline,
+            maxLatencyMinutes: maxLatencyMinutes,
+            status: JobStatus.Open,
+            acceptedSolutionHash: bytes32(0),
+            routeCommitment: bytes32(0)
+        });
+
+        emit JobCreated(jobId, msg.sender, instanceHash, msg.value, deadline, maxLatencyMinutes);
+    }
+
+    function acceptBestPoW(
+        uint256 jobId,
+        bytes32 solutionHash,
+        bytes32 routeCommitment,
+        uint256 etaMinutes,
+        uint256 score,
+        bytes calldata proof
+    ) external {
+        DeliveryJob storage job = jobs[jobId];
+        require(job.status == JobStatus.Open, "not open");
+        require(block.timestamp < job.deadline, "expired");
+        require(verifier.verifySolution(bytes32(jobId), job.instanceHash, solutionHash, proof), "invalid PoW");
+        require(!acceptedSolutions[jobId][solutionHash], "already accepted");
+
+        bool better = job.acceptedSolutionHash == bytes32(0) || score < uint256(bytes32(job.acceptedSolutionHash));
+        require(better, "not best");
+
+        acceptedSolutions[jobId][solutionHash] = true;
+        job.courier = msg.sender;
+        job.acceptedSolutionHash = solutionHash;
+        job.routeCommitment = routeCommitment;
+        job.status = JobStatus.Assigned;
+
+        emit JobAssigned(jobId, msg.sender, solutionHash);
+    }
+
+    function completeJob(
+        uint256 jobId,
+        bytes32 solutionHash,
+        bytes32 deliveryReceiptHash
+    ) external {
+        DeliveryJob storage job = jobs[jobId];
+        require(job.status == JobStatus.Assigned, "not assigned");
+        require(msg.sender == job.courier, "not courier");
+        require(solutionHash == job.acceptedSolutionHash, "wrong solution");
+        require(block.timestamp <= job.deadline + job.maxLatencyMinutes * 1 minutes, "late");
+
+        job.status = JobStatus.Completed;
+        payable(job.courier).transfer(job.reward);
+
+        emit JobCompleted(jobId, solutionHash);
+        deliveryReceiptHash;
+    }
+
+    function cancelExpired(uint256 jobId) external {
+        DeliveryJob storage job = jobs[jobId];
+        require(job.status == JobStatus.Open || job.status == JobStatus.Assigned, "bad status");
+        require(block.timestamp > job.deadline + job.maxLatencyMinutes * 1 minutes, "too early");
+
+        job.status = JobStatus.Cancelled;
+        payable(job.sponsor).transfer(job.reward);
+
+        emit JobCancelled(jobId);
+    }
+}
